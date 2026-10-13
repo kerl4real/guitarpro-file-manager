@@ -91,6 +91,14 @@ async fn query_library(backend: State<'_, Backend>, query: Query) -> Result<Page
 }
 
 #[tauri::command]
+async fn save_parser(backend: State<'_, Backend>, parser: String) -> Result<()> {
+    let library = backend.library.clone();
+    tauri::async_runtime::spawn_blocking(move || library.save_parser(&parser))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn start_scan(backend: State<'_, Backend>, parser: String, folder: String) -> Result<()> {
     let jobs = backend.jobs.clone();
     let library = backend.library.clone();
@@ -190,6 +198,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             query_library,
+            save_parser,
             start_scan,
             cancel_job,
             pick_path,

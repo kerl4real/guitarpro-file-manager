@@ -14,14 +14,18 @@
     <div class="aside-note">LOCAL LIBRARY<p>Your music. All in one place.</p><small id="database"></small></div>
   </aside>
   <main>
+    <nav class="top-nav" aria-label="Main navigation">
+      <button id="library-nav" type="button" aria-current="page">Score library</button>
+      <button id="settings-nav" type="button">Settings</button>
+    </nav>
     <header>
-      <div><div class="eyebrow">YOUR COLLECTION</div><h1>Score library</h1><p>Find the right song. Pick up where you left off.</p></div>
+      <div><div class="eyebrow" id="view-eyebrow">YOUR COLLECTION</div><h1 id="view-title" tabindex="-1">Score library</h1><p id="view-description">Find the right song. Pick up where you left off.</p></div>
       <button id="import">Import JSONL</button></header>
+    <div id="library-view">
     <section class="scan" aria-label="Library scan">
-      <label>Parser executable<div class="input-action"><input id="parser" placeholder="Path to score_tool"><button id="browse-parser" type="button">Browse…</button></div></label>
+
       <label>Score folder<div class="input-action"><input id="folder" placeholder="Choose your scores folder"><button id="browse-folder" type="button">Browse…</button></div></label>
       <button class="primary" id="scan">Scan folder</button>
-      <button id="cancel" hidden>Cancel</button>
     </section>
     <section class="toolbar">
       <input id="search" type="search" aria-label="Search library" placeholder="Search title, artist, album, instrument, or path…">
@@ -29,11 +33,12 @@
       <select id="status" aria-label="Parse status"><option value="">All statuses</option><option value="ok">Parsed</option><option value="error">Errors</option></select>
       <span id="count">0 files</span>
     </section>
-    <div class="workspace">
-      <section class="collection" aria-label="Scores">
-        <div class="table-scroll"><table>
+    <div class="workspace" id="workspace">
+      <section class="collection" id="collection" aria-label="Scores">
+        <div class="table-scroll"><table id="score-table">
+          <colgroup><col id="col-title"><col id="col-filename"><col id="col-directory"><col id="col-artist"><col id="col-album"><col id="col-format"><col id="col-tempo"><col id="col-tracks"><col id="col-status"></colgroup>
           <thead><tr>
-            <th><button data-sort="title">Title ↕</button></th><th><button data-sort="artist">Artist ↕</button></th>
+            <th><button data-sort="title">Title ↕</button></th><th><button data-sort="filename">File name &#8597;</button></th><th><button data-sort="directory">Directory &#8597;</button></th><th><button data-sort="artist">Artist ↕</button></th>
             <th><button data-sort="album">Album ↕</button></th><th><button data-sort="format">Format ↕</button></th>
             <th><button data-sort="tempo">BPM ↕</button></th><th><button data-sort="tracks">Tracks ↕</button></th>
             <th><button data-sort="status">Status ↕</button></th>
@@ -42,12 +47,23 @@
         <div id="empty"><span>♫</span><h2 id="empty-title">Build your score library</h2><p>Scan a folder of Guitar Pro files or import an existing JSONL extraction.</p></div>
         <nav class="pagination" aria-label="Library pages"><button id="previous" disabled>Previous</button><span id="page-info">Page 1 of 1</span><button id="next" disabled>Next</button></nav>
       </section>
-      <section class="details" aria-label="Selected score">
+      <div id="pane-resizer" role="separator" tabindex="0" aria-label="Resize score table and details" aria-orientation="vertical" aria-controls="collection score-details" aria-valuemin="0" aria-valuemax="100" aria-valuenow="60" title="Drag to resize table and details; double-click to reset"></div>
+      <section class="details" id="score-details" aria-label="Selected score">
         <div class="eyebrow">FILE DETAILS</div><h2 id="selected">Select a score</h2><p id="path">Browse your library to inspect metadata.</p>
         <button id="open" disabled>Open score ↗</button><pre id="metadata"></pre>
       </section>
     </div>
-    <footer><progress id="progress" hidden aria-label="Import in progress"></progress><span id="message" role="status">Ready.</span></footer>
+    </div>
+    <section id="settings-view" class="settings-panel" aria-label="Settings" hidden>
+      <h2>Parser executable</h2>
+      <p>Choose the score_tool executable used to extract metadata from your scores. Saved changes apply to your next scan.</p>
+      <label for="parser">Executable location</label>
+      <div class="input-action"><input id="parser" placeholder="Path to score_tool" aria-describedby="parser-help"><button id="browse-parser" type="button">Browse...</button></div>
+      <p id="parser-help">Enter a path or browse to an executable, then save your settings.</p>
+      <button id="save-settings" class="primary" type="button">Save settings</button>
+      <span id="settings-message" role="status"></span>
+    </section>
+    <footer><button id="cancel" hidden>Cancel</button><progress id="progress" hidden aria-label="Import in progress"></progress><span id="message" role="status">Ready.</span></footer>
   </main>
 </body>
 </html>

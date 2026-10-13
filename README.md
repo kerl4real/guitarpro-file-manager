@@ -40,13 +40,16 @@ cargo build --release -p cli
 ```
 
 The manager looks for `score_tool[.exe]` beside its executable, in the sibling
-parser's release/debug build, then on PATH. Use **Browse** beside Parser executable
-to choose another build. Use **Browse** beside Score folder and **Scan folder**
+parser's release/debug build, then on PATH. Open **Settings** in the top navigation, use **Browse** beside Executable location
+to choose another build, and select **Save settings**. The parser location is saved
+immediately and used for subsequent scans. Use **Browse** beside Score folder and **Scan folder**
 to recursively index scores. **Import JSONL** opens a native file dialog for an
 existing extraction. The last scan's parser and folder are saved across restarts.
 
 Search metadata, select format/status filters, click column headers to sort, and
-navigate pages of 200 records. Select a score to inspect its full extraction; use
+navigate pages of 200 records. Wider tables scroll horizontally. Drag the divider between the table and score
+details to resize both panes together. The divider supports Left/Right arrows
+and double-clicking to restore the default split. Select a score to inspect its full extraction; use
 **Open score** or double-click a row to launch the associated application. A score
 application must be installed and associated with that extension.
 

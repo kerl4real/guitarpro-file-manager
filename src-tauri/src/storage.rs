@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{functions::FunctionFlags, params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -50,6 +50,22 @@ pub struct Page {
 pub struct Settings {
     pub parser: String,
     pub folder: String,
+}
+
+fn path_sort_value(path: &str, directory: bool) -> &str {
+    let windows = path.as_bytes().get(1) == Some(&b':') || path.starts_with("\\\\");
+    let separator = |c| c == '/' || (windows && c == '\\');
+    let Some(index) = path.rfind(separator) else {
+        return if directory { "" } else { path };
+    };
+    if !directory {
+        return &path[index + 1..];
+    }
+    let parent = &path[..index];
+    parent
+        .rsplit(separator)
+        .find(|part| !part.is_empty())
+        .unwrap_or("/")
 }
 
 pub fn normalized_path(path: &str) -> Result<String> {
@@ -154,6 +170,19 @@ impl Library {
             }
         }
         Ok(settings)
+    }
+
+    pub fn save_parser(&self, parser: &str) -> Result<()> {
+        if parser.trim().is_empty() {
+            return Err("Choose a parser executable".into());
+        }
+        self.connect()?
+            .execute(
+                "INSERT INTO settings VALUES ('parser', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![parser],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -269,6 +298,8 @@ impl Library {
     pub fn query(&self, query: Query) -> Result<Page> {
         let column = match query.sort.as_str() {
             "" => "title",
+            "filename" => "score_filename(path)",
+            "directory" => "score_directory(path)",
             "path" | "title" | "artist" | "album" | "format" | "tempo" | "tracks" | "status" => {
                 &query.sort
             }
@@ -287,6 +318,18 @@ impl Library {
             OR album LIKE ?1 ESCAPE '\' OR path LIKE ?1 ESCAPE '\' OR record LIKE ?1 ESCAPE '\')
             AND (?2 = '' OR format = ?2) AND (?3 = '' OR status = ?3)";
         let mut db = self.connect()?;
+        for (name, directory) in [("score_filename", false), ("score_directory", true)] {
+            db.create_scalar_function(
+                name,
+                1,
+                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+                move |context| {
+                    let path = context.get::<String>(0)?;
+                    Ok(path_sort_value(&path, directory).to_owned())
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        }
         let tx = db.transaction().map_err(|e| e.to_string())?;
         let total: usize = tx
             .query_row(

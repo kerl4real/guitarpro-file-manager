@@ -392,3 +392,71 @@ fn cancellation_terminates_a_streaming_parser_and_preserves_library() {
         Some(120)
     );
 }
+
+#[test]
+fn parser_setting_saves_without_a_scan_and_preserves_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::new(dir.path().to_path_buf()).unwrap();
+    library
+        .save_settings(&Settings {
+            parser: "old_parser".into(),
+            folder: "saved_folder".into(),
+        })
+        .unwrap();
+    library.save_parser("new_parser").unwrap();
+    let reopened = Library::new(dir.path().to_path_buf()).unwrap();
+    let settings = reopened.settings("fallback").unwrap();
+    assert_eq!(settings.parser, "new_parser");
+    assert_eq!(settings.folder, "saved_folder");
+    assert!(reopened.save_parser("   ").is_err());
+    assert_eq!(reopened.settings("fallback").unwrap().parser, "new_parser");
+}
+
+#[test]
+fn filename_and_directory_sort_by_displayed_values_before_pagination() {
+    let (dir, library) = library();
+    let records = (0..205)
+        .map(|i| {
+            record(
+                &dir.path()
+                    .join(format!("group{:03}/song{:03}.gp5", 204 - i, i)),
+                120,
+            )
+        })
+        .collect::<Vec<_>>();
+    library.import_jsonl(&write(dir.path(), &records)).unwrap();
+    for (sort, descending, expected) in [
+        ("filename", false, 0),
+        ("filename", true, 204),
+        ("directory", false, 204),
+        ("directory", true, 0),
+    ] {
+        let page = library
+            .query(Query {
+                sort: sort.into(),
+                descending,
+                ..Query::default()
+            })
+            .unwrap();
+        assert_eq!(page.total, 205);
+        assert_eq!(page.rows.len(), 200);
+        let expected_path = dir.path().join(format!(
+            "group{:03}/song{:03}.gp5",
+            204 - expected,
+            expected
+        ));
+        assert_eq!(
+            page.rows[0].path,
+            normalized_path(&expected_path.to_string_lossy()).unwrap()
+        );
+    }
+    let page = library
+        .query(Query {
+            sort: "filename".into(),
+            page: 1,
+            ..Query::default()
+        })
+        .unwrap();
+    assert_eq!(page.rows.len(), 5);
+    assert!(page.rows[0].path.ends_with("song200.gp5"));
+}

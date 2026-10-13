@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 let rows = [], selected = null, sort = 'title', descending = false, page = 0;
 let initialized = false, lastMessage = '', lastRevision = -1, requestId = 0;
-let acceptingJob = false, polling = false;
+let acceptingJob = false, polling = false, savingSettings = false, savedParser = '';
 
 async function invoke(command, args) {
   try {
@@ -11,11 +11,41 @@ async function invoke(command, args) {
   }
 }
 
+function displayPath(path) {
+  return path.replace(/^[\\/]{2}\?[\\/](?:UNC[\\/])?/i,
+    prefix => /UNC/i.test(prefix) ? prefix[0].repeat(2) : '');
+}
+function displayMessage(message) {
+  return message.replace(/[\\/]{2}\?[\\/](?:UNC[\\/])?/gi,
+    prefix => /UNC/i.test(prefix) ? prefix[0].repeat(2) : '');
+}
+const originalPaths = {};
+function setPathField(id, path) {
+  originalPaths[id] = path;
+  $(id).value = displayPath(path);
+}
+function pathFieldValue(id) {
+  const original = originalPaths[id];
+  return original !== undefined && $(id).value === displayPath(original) ? original : $(id).value;
+}
+
+function fileLocation(path) {
+  path = displayPath(path);
+  const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\');
+  const separator = windows ? Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) : path.lastIndexOf('/');
+  const filename = path.slice(separator + 1);
+  const directory = separator < 0 ? '' : path.slice(0, separator) || '/';
+  // Keep the separator on drive roots, such as C:\.
+  const fullDirectory = windows && /^[a-z]:$/i.test(directory) ? path.slice(0, separator + 1) : directory;
+  const parts = fullDirectory.split(windows ? /[\\/]/ : /\//).filter(Boolean);
+  return {filename, directory: parts.at(-1) || fullDirectory, fullDirectory};
+}
+
 function detail(row) {
   selected = row;
   $('selected').textContent = row ? row.title : 'Select a score';
-  $('path').textContent = row ? row.path : 'Browse your library to inspect metadata.';
-  $('metadata').textContent = row ? JSON.stringify(JSON.parse(row.record), null, 2) : '';
+  $('path').textContent = row ? displayPath(row.path) : 'Browse your library to inspect metadata.';
+  $('metadata').textContent = row ? JSON.stringify(JSON.parse(row.record), (key, value) => typeof value === 'string' ? displayPath(value) : value, 2) : '';
   $('open').disabled = !row;
   for (const tr of $('rows').children) tr.classList.toggle('selected', tr.dataset.path === row?.path);
 }
@@ -45,9 +75,12 @@ async function refresh(resetPage = false) {
     const tr = document.createElement('tr');
     tr.dataset.path = row.path;
     tr.tabIndex = 0;
-    for (const key of ['title', 'artist', 'album', 'format', 'tempo', 'tracks', 'status']) {
+    const location = fileLocation(row.path);
+    for (const key of ['title', 'filename', 'directory', 'artist', 'album', 'format', 'tempo', 'tracks', 'status']) {
       const td = document.createElement('td');
-      td.textContent = row[key] ?? '—';
+      td.textContent = (key === 'filename' || key === 'directory' ? location[key] : row[key]) ?? '—';
+      if (key === 'directory') td.title = location.fullDirectory;
+      if (key === 'filename') td.title = location.filename;
       if (key === 'format') {
         const span = document.createElement('span');
         span.className = 'badge';
@@ -69,22 +102,23 @@ async function refresh(resetPage = false) {
   detail(rows.find(row => row.path === selected?.path) || null);
 }
 
-function report(error) { $('message').textContent = error.message || String(error); }
+function report(error) { $('message').textContent = displayMessage(error.message || String(error)); }
 
 async function state() {
   const value = await invoke('get_state');
   if (!initialized) {
-    $('parser').value = value.parser;
-    $('folder').value = value.folder || '';
-    $('database').textContent = value.database;
+    savedParser = value.parser;
+    setPathField('parser', savedParser);
+    setPathField('folder', value.folder || '');
+    $('database').textContent = displayPath(value.database);
     initialized = true;
   }
-  setBusy(value.busy || acceptingJob);
+  setBusy(value.busy || acceptingJob || savingSettings);
   $('cancel').hidden = !value.busy;
   $('cancel').disabled = value.cancelling;
   $('progress').hidden = !value.busy;
   const changed = lastMessage !== value.message;
-  if (changed) $('message').textContent = value.message;
+  if (changed) $('message').textContent = displayMessage(value.message);
   const revision = value.revision ?? value.message;
   if (revision !== lastRevision && !value.busy) {
     await refresh();
@@ -94,7 +128,7 @@ async function state() {
 }
 
 function setBusy(busy) {
-  for (const id of ['scan', 'import', 'browse-parser', 'browse-folder', 'parser', 'folder']) {
+  for (const id of ['scan', 'import', 'browse-parser', 'browse-folder', 'parser', 'folder', 'save-settings']) {
     $(id).disabled = busy;
   }
 }
@@ -114,8 +148,46 @@ async function startJob(operation) {
   }
 }
 
+function showView(settings) {
+  $('library-view').hidden = settings;
+  $('settings-view').hidden = !settings;
+  $('import').hidden = settings;
+  $('library-nav').setAttribute('aria-current', settings ? 'false' : 'page');
+  $('settings-nav').setAttribute('aria-current', settings ? 'page' : 'false');
+  $('view-eyebrow').textContent = settings ? 'APPLICATION' : 'YOUR COLLECTION';
+  $('view-title').textContent = settings ? 'Settings' : 'Score library';
+  $('view-description').textContent = settings ? 'Configure your score library tools.' : 'Find the right song. Pick up where you left off.';
+  $('view-title').focus();
+}
+$('library-nav').onclick = () => showView(false);
+$('settings-nav').onclick = () => showView(true);
+$('save-settings').onclick = async () => {
+  if (!initialized || savingSettings || $('save-settings').disabled) return;
+  const parser = pathFieldValue('parser').trim();
+  if (!parser) {
+    $('settings-message').textContent = 'Choose a parser executable.';
+    $('parser').focus();
+    return;
+  }
+  savingSettings = true;
+  setBusy(true);
+  $('settings-message').textContent = 'Saving...';
+  try {
+    await invoke('save_parser', {parser});
+    savedParser = parser;
+    setPathField('parser', parser);
+    $('settings-message').textContent = 'Settings saved.';
+  } catch (error) {
+    $('settings-message').textContent = displayMessage(error.message);
+  } finally {
+    savingSettings = false;
+    await state().catch(report);
+  }
+};
+$('parser').oninput = () => { $('settings-message').textContent = ''; };
+
 $('scan').onclick = () => startJob(() => invoke('start_scan', {
-  parser: $('parser').value, folder: $('folder').value
+  parser: savedParser, folder: pathFieldValue('folder')
 }));
 
 $('import').onclick = async () => {
@@ -130,7 +202,10 @@ for (const [id, kind, field] of [
   $(id).onclick = async () => {
     try {
       const path = await invoke('pick_path', {kind});
-      if (path) $(field).value = path;
+      if (path) {
+        setPathField(field, path);
+        if (field === 'parser') $('settings-message').textContent = '';
+      }
     } catch (error) { report(error); }
   };
 }
@@ -155,6 +230,76 @@ for (const button of document.querySelectorAll('[data-sort]')) button.onclick = 
 };
 $('previous').onclick = () => { page = Math.max(0, page - 1); refresh().catch(report); };
 $('next').onclick = () => { page += 1; refresh().catch(report); };
+// The divider shares the available width between the table and score details.
+const paneResizer = $('pane-resizer');
+let paneRatio = null, paneDrag = null;
+function paneSpace() {
+  return Math.max(0, $('workspace').getBoundingClientRect().width - 20);
+}
+function resizePanes(tableWidth) {
+  const available = paneSpace();
+  if (!available || window.matchMedia('(max-width:1100px)').matches) return;
+  const minimum = Math.min(240, available / 2);
+  tableWidth = Math.max(minimum, Math.min(available - minimum, tableWidth));
+  paneRatio = tableWidth / available;
+  $('workspace').style.setProperty('--pane-columns',
+    `minmax(0, ${paneRatio}fr) 20px minmax(0, ${1 - paneRatio}fr)`);
+  paneResizer.setAttribute('aria-valuemin', Math.round(100 * minimum / available));
+  paneResizer.setAttribute('aria-valuemax', Math.round(100 * (available - minimum) / available));
+  paneResizer.setAttribute('aria-valuenow', Math.round(100 * paneRatio));
+}
+function stopPaneDrag() {
+  paneDrag = null;
+  $('workspace').classList.toggle('resizing', false);
+}
+paneResizer.onpointerdown = event => {
+  if (event.button !== 0 || window.matchMedia('(max-width:1100px)').matches) return;
+  event.preventDefault();
+  paneDrag = {pointerId: event.pointerId, x: event.clientX,
+    width: $('collection').getBoundingClientRect().width};
+  paneResizer.setPointerCapture(event.pointerId);
+  paneResizer.focus();
+  $('workspace').classList.toggle('resizing', true);
+};
+paneResizer.onpointermove = event => {
+  if (paneDrag && event.pointerId === paneDrag.pointerId) {
+    resizePanes(paneDrag.width + event.clientX - paneDrag.x);
+  }
+};
+paneResizer.onpointerup = event => {
+  if (paneDrag && event.pointerId === paneDrag.pointerId) {
+    paneResizer.releasePointerCapture(event.pointerId);
+    stopPaneDrag();
+  }
+};
+paneResizer.onpointercancel = paneResizer.onlostpointercapture = stopPaneDrag;
+paneResizer.onkeydown = event => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const width = $('collection').getBoundingClientRect().width;
+  resizePanes(event.key === 'Home' ? 0 : event.key === 'End' ? paneSpace() :
+    width + (event.key === 'ArrowRight' ? 1 : -1) * (event.shiftKey ? 50 : 10));
+};
+paneResizer.ondblclick = () => {
+  paneRatio = null;
+  $('workspace').style.removeProperty('--pane-columns');
+  updatePaneDivider();
+};
+function updatePaneDivider() {
+  if (window.matchMedia('(max-width:1100px)').matches) { stopPaneDrag(); return; }
+  const available = paneSpace();
+  if (!available) return;
+  if (paneRatio !== null) resizePanes(paneRatio * available);
+  else {
+    const minimum = Math.min(240, available / 2);
+    paneResizer.setAttribute('aria-valuemin', Math.round(100 * minimum / available));
+    paneResizer.setAttribute('aria-valuemax', Math.round(100 * (available - minimum) / available));
+    paneResizer.setAttribute('aria-valuenow', Math.round(100 * $('collection').getBoundingClientRect().width / available));
+  }
+}
+window.addEventListener('resize', updatePaneDivider);
+updatePaneDivider();
+
 async function poll() {
   if (polling) return;
   polling = true;
