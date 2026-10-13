@@ -3,7 +3,26 @@
   "productName": "guitarpro-file-manager",
   "version": "0.1.0",
   "identifier": "local.guitarpro.filemanager",
-  "build": {"frontendDist": "../web"},
-  "app": {"windows": [], "security": {"csp": null}},
-  "bundle": {"active": false}
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "library",
+        "title": "Guitar Pro File Manager",
+        "width": 1320,
+        "height": 850,
+        "minWidth": 850,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
 }

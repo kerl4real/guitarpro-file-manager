@@ -47,28 +47,38 @@ future cleanup operation. Metadata extraction never edits the score files.
 Tauri is the selected GUI stack (2026-10-12), following comparison with Tkinter.
 Continue development of the web interface in the native Tauri window. SQLite
 remains the persistence layer and `score_tool scan` remains the parser boundary.
-Tkinter is retained as a comparison artifact rather than an active product target.
+The earlier Python comparison apps have been removed.
 
-The current Tauri prototype launches a Python/SQLite HTTP backend. The next
-implementation milestone replaces that development service with Rust Tauri
-commands, embedded SQLite storage, and asynchronous parser process execution.
-Serve the frontend as bundled Tauri assets and use Tauri IPC instead of localhost
-HTTP. Add native folder/executable selection and system file opening. Preserve
-the existing JSONL protocol, transactional imports, and library schema.
+The native app now uses Rust Tauri commands, embedded SQLite, and asynchronous
+parser execution. Frontend assets are bundled and communicate through Tauri IPC.
+Native pickers select folders, parser executables, and JSONL imports. File opening
+is restricted to supported scores indexed in the library. The JSONL protocol and
+transactional imports are preserved; schema version 2 adds saved parser/folder
+settings while retaining version 1 score records.
+
+Completed on 2026-10-13: native backend migration, process cancellation, persisted
+scan settings, and 200-row query pagination. Automated checks include real parser
+output and migration from the earlier database. Native dialog/layout verification
+is pending because the Windows automation helper is unavailable in this session.
 
 The Windows Tauri executable has built and launched successfully. Dependency
 downloads succeeded outside the restricted sandbox; no user setup is currently
 blocking Windows development. macOS/Linux packaging and runtime verification
 remain pending native environments or CI runners.
 
+The repository root is a Cargo workspace with a shared lockfile and build output.
+The Rust backend and Tauri configuration stay in `src-tauri/`, frontend assets
+in `web/`, and frontend checks in `tests/`. Run Cargo commands directly from the
+repository root.
+
 ## Follow-up milestones
 
-1. Migrate the prototype backend into Rust/Tauri and add native file/folder dialogs.
+1. Completed: Rust/Tauri backend and native file/folder dialogs.
    Continue in the separate `guitarpro-file-manager` repository, located beside
    `guitarpro-file-parser`. Discover the parser in that sibling repository or
    through an explicitly configured executable.
-2. Add saved library folders, persisted settings, incremental scanning, cancellation,
-   paginated queries, and database migrations as the schema evolves.
+2. Add multiple saved library folders and incremental scanning. Saved scan settings,
+   cancellation, pagination, and the first database migration are implemented.
 3. Add track/instrument/tuning filters, duplicate checksum groups, missing-file
    reconciliation, saved searches, and configurable application selection.
 4. Package native installers and parser binaries for each target OS, then test

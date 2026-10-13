@@ -1,0 +1,10 @@
+{
+  "identifier": "library",
+  "description": "Core access for the local library window. Native dialogs and opening are handled by scoped Rust commands.",
+  "windows": [
+    "library"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}
