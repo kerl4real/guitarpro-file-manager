@@ -50,7 +50,21 @@
       <div id="pane-resizer" role="separator" tabindex="0" aria-label="Resize score table and details" aria-orientation="vertical" aria-controls="collection score-details" aria-valuemin="0" aria-valuemax="100" aria-valuenow="60" title="Drag to resize table and details; double-click to reset"></div>
       <section class="details" id="score-details" aria-label="Selected score">
         <div class="eyebrow">FILE DETAILS</div><h2 id="selected">Select a score</h2><p id="path">Browse your library to inspect metadata.</p>
-        <button id="open" disabled>Open score ↗</button><pre id="metadata"></pre>
+        <dl id="metadata-summary" class="metadata-summary" hidden></dl>
+        <section id="track-summary" class="track-summary" aria-labelledby="tracks-heading" hidden>
+          <h3 id="tracks-heading">Tracks</h3>
+          <div class="track-scroll"><table class="track-table">
+            <thead><tr><th scope="col">Instrument</th><th scope="col">Name</th><th scope="col">Tuning</th></tr></thead>
+            <tbody id="track-rows"></tbody>
+          </table></div>
+          <p id="tracks-empty">No track details available.</p>
+        </section>
+        <p id="detail-error" class="error" hidden></p>
+        <button id="open" disabled>Open score ↗</button>
+        <details id="raw-details" class="raw-details" hidden>
+          <summary>Raw JSON details</summary>
+          <pre id="metadata"></pre>
+        </details>
       </section>
     </div>
     </div>

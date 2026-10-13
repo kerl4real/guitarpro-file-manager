@@ -41,11 +41,88 @@ function fileLocation(path) {
   return {filename, directory: parts.at(-1) || fullDirectory, fullDirectory};
 }
 
+function instrumentIcon(track) {
+  // Percussion tracks share MIDI programs with melodic instruments.
+  if (/drums|percussion/i.test([track?.kind, track?.instrument].join(' '))) {
+    return {symbol: '🥁', label: 'Drums / Percussion'};
+  }
+  const program = track?.midi_program;
+  if (!Number.isInteger(program) || program < 0 || program > 127) {
+    return {symbol: '♫', label: 'Instrument'};
+  }
+  const families = [
+    ['🎹', 'Piano'], ['🥁', 'Chromatic percussion'], ['🎹', 'Organ'],
+    ['🎸', 'Guitar'], ['🎸', 'Bass'], ['🎻', 'Strings'],
+    ['🎻', 'Ensemble'], ['🎺', 'Brass'], ['🎷', 'Reed'],
+    ['🪈', 'Pipe'], ['🎹', 'Synth lead'], ['🎹', 'Synth pad'],
+    ['🎹', 'Synth effects'], ['🪕', 'Ethnic instruments'],
+    ['🥁', 'Percussion'], ['🔊', 'Sound effects']
+  ];
+  const [symbol, label] = families[Math.floor(program / 8)];
+  return {symbol, label};
+}
+
 function detail(row) {
+  if (selected?.path !== row?.path || !row) $('raw-details').open = false;
   selected = row;
+  $('metadata-summary').hidden = !row;
+  $('raw-details').hidden = !row;
+  $('metadata-summary').replaceChildren();
+  if (row) {
+    for (const [label, value] of [
+      ['Artist', row.artist], ['Album', row.album], ['Format', row.format],
+      ['Tempo', row.tempo == null ? null : row.tempo + ' BPM'],
+      ['Tracks', row.tracks], ['Status', row.status === 'ok' ? 'Parsed' : row.status === 'error' ? 'Parse error' : row.status]
+    ]) {
+      const item = document.createElement('div');
+      const term = document.createElement('dt');
+      const description = document.createElement('dd');
+      term.textContent = label;
+      description.textContent = value == null || value === '' ? '—' : value;
+      if (label === 'Status' && row.status === 'error') description.className = 'error';
+      item.append(term);
+      item.append(description);
+      $('metadata-summary').append(item);
+    }
+  }
+  const record = row ? JSON.parse(row.record) : null;
+  const tracks = Array.isArray(record?.metadata?.tracks) ? record.metadata.tracks : [];
+  $('track-summary').hidden = !row;
+  $('tracks-empty').hidden = tracks.length > 0;
+  $('track-rows').replaceChildren();
+  for (const track of tracks) {
+    const tr = document.createElement('tr');
+    const instrument = document.createElement('td');
+    const icon = instrumentIcon(track);
+    const symbol = document.createElement('span');
+    symbol.className = 'instrument-icon';
+    symbol.textContent = icon.symbol;
+    symbol.title = track?.instrument || icon.label;
+    symbol.setAttribute('role', 'img');
+    symbol.setAttribute('aria-label', symbol.title);
+    instrument.append(symbol);
+    const name = document.createElement('td');
+    const title = document.createElement('span');
+    title.textContent = track?.name || 'Unnamed track';
+    name.append(title);
+    if (track?.instrument) {
+      const subtitle = document.createElement('small');
+      subtitle.textContent = track.instrument;
+      name.append(subtitle);
+    }
+    const tuning = document.createElement('td');
+    tuning.textContent = Array.isArray(track?.tuning) && track.tuning.length
+      ? track.tuning.map(string => string?.note ?? string?.midi ?? '—').join(' · ') : '—';
+    tr.append(instrument);
+    tr.append(name);
+    tr.append(tuning);
+    $('track-rows').append(tr);
+  }
+  $('detail-error').hidden = !record?.error;
+  $('detail-error').textContent = record?.error ? displayMessage(String(record.error)) : '';
   $('selected').textContent = row ? row.title : 'Select a score';
   $('path').textContent = row ? displayPath(row.path) : 'Browse your library to inspect metadata.';
-  $('metadata').textContent = row ? JSON.stringify(JSON.parse(row.record), (key, value) => typeof value === 'string' ? displayPath(value) : value, 2) : '';
+  $('metadata').textContent = row ? JSON.stringify(record, (key, value) => typeof value === 'string' ? displayPath(value) : value, 2) : '';
   $('open').disabled = !row;
   for (const tr of $('rows').children) tr.classList.toggle('selected', tr.dataset.path === row?.path);
 }

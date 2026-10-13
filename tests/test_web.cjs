@@ -48,7 +48,12 @@ const calls = [];
 let revision = 0, busy = false, failScan = false, failOpen = false, failSave = false, savedParser = 'score_tool';
 const row = {path: 'C:\\Scores\\日本語.gp5', title: '<script>safe text</script>',
   artist: 'Björk', album: '', format: 'GP5', tempo: 120, tracks: 3, status: 'ok',
-  record: JSON.stringify({metadata: {title: '日本語'}})};
+  record: JSON.stringify({metadata: {title: '日本語', tracks: [
+    {index: 1, midi_program: 25, name: '<Lead guitar>', instrument: 'Acoustic Guitar',
+      tuning: [{number: 1, midi: 64, note: 'E4'}, {number: 2, midi: 59, note: 'B3'}]},
+    {index: 2, midi_program: 118, name: 'Drums', instrument: 'Drums / Percussion'},
+    {index: 3, name: '', tuning: [{number: 1, midi: 40}]}
+  ]}})};
 const responses = {folder: 'C:\\Scores', parser: 'C:\\Tools\\score_tool.exe', jsonl: 'C:\\Exports\\scan.jsonl'};
 const invoke = async (command, args) => {
   calls.push({command, args});
@@ -203,7 +208,54 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(query.format, 'GP5');
   assert.equal(query.page, 0);
 
+  assert.equal(elements['metadata-summary'].hidden, true);
+  assert.equal(elements['raw-details'].hidden, true);
   elements.rows.children[0].click();
+  assert.equal(elements['track-summary'].hidden, false);
+  assert.equal(elements['tracks-empty'].hidden, true);
+  assert.equal(elements['track-rows'].children.length, 3);
+  const trackCells = elements['track-rows'].children[0].children;
+  assert.equal(trackCells[0].children[0].textContent, '🎸');
+  assert.equal(trackCells[0].children[0].title, 'Acoustic Guitar');
+  assert.equal(trackCells[0].children[0].attributes['aria-label'], 'Acoustic Guitar');
+  assert.equal(elements['track-rows'].children[1].children[0].children[0].textContent, '🥁');
+  for (const [program, expected] of [[0, '🎹'], [24, '🎸'], [32, '🎸'], [40, '🎻'], [56, '🎺'], [64, '🎷'], [112, '🥁'], [120, '🔊'], [null, '♫'], [-1, '♫'], [128, '♫']]) {
+    context.iconTrack = {midi_program: program};
+    assert.equal(vm.runInContext('instrumentIcon(iconTrack).symbol', context), expected);
+  }
+  context.iconTrack = {midi_program: 0, kind: 'Percussion'};
+  assert.equal(vm.runInContext('instrumentIcon(iconTrack).symbol', context), '🥁');
+  assert.equal(trackCells[1].children[0].textContent, '<Lead guitar>', 'Render names as safe text');
+  assert.equal(trackCells[1].children[1].textContent, 'Acoustic Guitar');
+  assert.equal(trackCells[2].textContent, 'E4 · B3');
+  assert.equal(elements['track-rows'].children[1].children[2].textContent, '—');
+  assert.equal(elements['track-rows'].children[2].children[0].children[0].textContent, '♫');
+  assert.equal(elements['track-rows'].children[2].children[1].children[0].textContent, 'Unnamed track');
+  assert.equal(elements['track-rows'].children[2].children[2].textContent, '40');
+  const summaryValues = () => elements['metadata-summary'].children.map(item => item.children[1].textContent);
+  assert.deepEqual(summaryValues(), ['Björk', '—', 'GP5', '120 BPM', 3, 'Parsed']);
+  assert.equal(elements['raw-details'].hidden, false);
+  assert.equal(elements['raw-details'].open, false);
+  elements['raw-details'].open = true;
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements['raw-details'].open, true, 'Refreshing the selected score keeps expanded JSON open');
+  context.errorRow = {...row, path: 'C:\\Scores\\broken.gp5', artist: '', tempo: null, tracks: 0,
+    status: 'error', record: JSON.stringify({error: '<parse failed>'})};
+  vm.runInContext('detail(errorRow)', context);
+  assert.equal(elements['raw-details'].open, false, 'Selecting another score collapses JSON');
+  assert.deepEqual(summaryValues(), ['—', '—', 'GP5', '—', 0, 'Parse error']);
+  assert.equal(elements['detail-error'].hidden, false);
+  assert.equal(elements['detail-error'].textContent, '<parse failed>');
+  assert.equal(elements['tracks-empty'].hidden, false);
+  assert.equal(elements['track-rows'].children.length, 0, 'Clear tracks when selecting a record without track metadata');
+  vm.runInContext('detail(null)', context);
+  assert.equal(elements['track-summary'].hidden, true);
+  assert.equal(elements['metadata-summary'].hidden, true);
+  assert.equal(elements['metadata-summary'].children.length, 0);
+  assert.equal(elements['raw-details'].hidden, true);
+  assert.equal(elements.metadata.textContent, '');
+  elements.rows.children[0].click();
+  assert.equal(elements['detail-error'].hidden, true);
   await elements.open.click();
   assert.equal(calls.find(call => call.command === 'open_score').args.path, row.path);
   failOpen = true;
