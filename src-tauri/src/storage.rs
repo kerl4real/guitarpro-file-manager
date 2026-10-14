@@ -501,11 +501,11 @@ impl Library {
 
     pub fn query(&self, query: Query) -> Result<Page> {
         let column = match query.sort.as_str() {
-            "" => "title",
             "filename" => "score_filename(path)",
             "directory" => "score_directory(path)",
             "updated_at" => "julianday(updated_at)",
-            "path" | "title" | "artist" | "album" | "format" | "tempo" | "tracks" | "status" => {
+            "" | "artist" => "score_artist(artist, path)",
+            "path" | "title" | "album" | "format" | "tempo" | "tracks" | "status" => {
                 &query.sort
             }
             _ => return Err("Unsupported sort column".into()),
@@ -542,6 +542,21 @@ impl Library {
             )
             .map_err(|e| e.to_string())?;
         }
+        db.create_scalar_function(
+            "score_artist",
+            2,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |context| {
+                let artist = context.get::<Option<String>>(0)?.unwrap_or_default();
+                if artist.trim().is_empty() {
+                    let path = context.get::<String>(1)?;
+                    Ok(path_sort_value(&path, true).to_owned())
+                } else {
+                    Ok(artist)
+                }
+            },
+        )
+        .map_err(|e| e.to_string())?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
         let total: usize = tx
             .query_row(

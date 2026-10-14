@@ -26,15 +26,19 @@
       <input id="search" type="search" aria-label="Search library" placeholder="Search title, artist, album, instrument, or path…">
       <select id="format" aria-label="File format"><option value="">All formats</option><option>GP3</option><option>GP4</option><option>GP5</option><option>GPX</option><option>GP</option><option>MSCZ</option></select>
       <select id="status" aria-label="Parse status"><option value="">All statuses</option><option value="ok">Parsed</option><option value="error">Errors</option></select>
-      <select id="tuning" aria-label="Track tuning" title="Match any track; pitches ordered by string number"><option value="">All tunings</option></select>
+      <select id="tuning" hidden aria-label="Track tuning"><option value="">All tunings</option></select>
+      <details id="tuning-picker" class="tuning-picker">
+        <summary id="tuning-label">All tunings</summary>
+        <div id="tuning-options" class="tuning-options" aria-label="Track tuning"></div>
+      </details>
       <span id="count">0 files</span>
     </section>
     <div class="workspace" id="workspace">
       <section class="collection" id="collection" aria-label="Scores">
         <div class="table-scroll"><table id="score-table">
-          <colgroup><col id="col-title"><col id="col-filename"><col id="col-directory"><col id="col-artist"><col id="col-album"><col id="col-format"><col id="col-tempo"><col id="col-tracks"><col id="col-status"><col id="col-updated_at"></colgroup>
+          <colgroup><col id="col-artist"><col id="col-title"><col id="col-filename"><col id="col-directory"><col id="col-album"><col id="col-format"><col id="col-tempo"><col id="col-tracks"><col id="col-status"><col id="col-updated_at"></colgroup>
           <thead><tr>
-            <th><button data-sort="title">Title ↕</button></th><th><button data-sort="filename">File name &#8597;</button></th><th><button data-sort="directory">Directory &#8597;</button></th><th><button data-sort="artist">Artist ↕</button></th>
+            <th><button data-sort="artist">Artist ↕</button></th><th><button data-sort="title">Title ↕</button></th><th><button data-sort="filename">File name &#8597;</button></th><th><button data-sort="directory">Directory &#8597;</button></th>
             <th><button data-sort="album">Album ↕</button></th><th><button data-sort="format">Format ↕</button></th>
             <th><button data-sort="tempo">BPM ↕</button></th><th><button data-sort="tracks">Tracks ↕</button></th>
             <th><button data-sort="status">Status ↕</button></th><th><button data-sort="updated_at">Date modified ↕</button></th>
@@ -85,10 +89,10 @@
         <p id="columns-help">Choose which columns to display. Changes save automatically. Keep at least one column visible.</p>
         <fieldset class="column-options" aria-describedby="columns-help">
           <legend>Visible columns</legend>
+          <label><input id="show-artist" type="checkbox" checked> Artist</label>
           <label><input id="show-title" type="checkbox" checked> Title</label>
           <label><input id="show-filename" type="checkbox" checked> File name</label>
           <label><input id="show-directory" type="checkbox" checked> Directory</label>
-          <label><input id="show-artist" type="checkbox" checked> Artist</label>
           <label><input id="show-album" type="checkbox" checked> Album</label>
           <label><input id="show-format" type="checkbox" checked> Format</label>
           <label><input id="show-tempo" type="checkbox" checked> BPM</label>

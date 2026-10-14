@@ -720,3 +720,26 @@ fn favorite_tunings_persist_validate_and_preserve_other_preferences() {
     assert_eq!(reopened.hidden_columns().unwrap(), ["album"]);
     assert_eq!(reopened.settings("").unwrap().parser, "score_tool");
 }
+
+#[test]
+fn artist_sort_uses_folder_fallback_without_replacing_metadata() {
+    let (dir, library) = library();
+    let mut records = Vec::new();
+    for (folder, artist) in [("Zulu", ""), ("Alpha", " \t"), ("Other", "Middle")] {
+        let mut value = record(&dir.path().join(folder).join("song.gp5"), 120);
+        value["metadata"]["artist"] = json!(artist);
+        records.push(value);
+    }
+    library.import_jsonl(&write(dir.path(), &records)).unwrap();
+    for descending in [false, true] {
+        let page = library.query(Query {
+            sort: "artist".into(), descending, ..Query::default()
+        }).unwrap();
+        let artists: Vec<_> = page.rows.iter().map(|row| row.artist.as_str()).collect();
+        assert_eq!(artists, if descending {
+            vec!["", "Middle", " \t"]
+        } else {
+            vec![" \t", "Middle", ""]
+        });
+    }
+}

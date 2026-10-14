@@ -1,10 +1,10 @@
 const $ = id => document.getElementById(id);
-let rows = [], selected = null, sort = 'title', descending = false, page = 0;
+let rows = [], selected = null, sort = 'artist', descending = false, page = 0;
 let initialized = false, lastMessage = '', lastRevision = -1, requestId = 0;
 let acceptingJob = false, polling = false, savingSettings = false, savedParser = '';
 
 const libraryColumns = [
-  ['title', 200], ['filename', 200], ['directory', 150], ['artist', 150],
+  ['artist', 150], ['title', 200], ['filename', 200], ['directory', 150],
   ['album', 150], ['format', 70], ['tempo', 60], ['tracks', 60], ['status', 70], ['updated_at', 180]
 ];
 let hiddenColumns = new Set(), savingColumns = false;
@@ -86,6 +86,11 @@ function displayDate(value) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
+function displayFolderName(name) {
+  if (name !== name.toLocaleLowerCase()) return name;
+  return name.replace(/(^|[\s\-_(])[\p{L}\p{N}]/gu, word => word.toLocaleUpperCase());
+}
+
 function fileLocation(path) {
   path = displayPath(path);
   const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\');
@@ -95,7 +100,19 @@ function fileLocation(path) {
   // Keep the separator on drive roots, such as C:\.
   const fullDirectory = windows && /^[a-z]:$/i.test(directory) ? path.slice(0, separator + 1) : directory;
   const parts = fullDirectory.split(windows ? /[\\/]/ : /\//).filter(Boolean);
-  return {filename, directory: parts.at(-1) || fullDirectory, fullDirectory};
+  return {filename, directory: displayFolderName(parts.at(-1) || fullDirectory), fullDirectory};
+}
+
+function displayedArtist(row) {
+  if (row.artist?.trim()) return {name: row.artist, fromFolder: false};
+  return {name: fileLocation(row.path).directory, fromFolder: true};
+}
+function renderArtist(element, row) {
+  const artist = displayedArtist(row);
+  element.textContent = artist.name ? artist.name + (artist.fromFolder ? ' (folder)' : '') : '—';
+  if (artist.name && artist.fromFolder) {
+    element.title = 'From the immediate folder; the source file has no artist metadata.';
+  }
 }
 
 function instrumentIcon(track) {
@@ -136,6 +153,7 @@ function detail(row) {
       const description = document.createElement('dd');
       term.textContent = label;
       description.textContent = value == null || value === '' ? '—' : value;
+      if (label === 'Artist') renderArtist(description, row);
       if (label === 'Status' && row.status === 'error') description.className = 'error';
       item.append(term);
       item.append(description);
@@ -185,6 +203,8 @@ function detail(row) {
 }
 
 function renderTunings() {
+  const expanded = new Set([...$('tuning-options').children].filter(group => group.open).map(group => group.dataset.count));
+  const expandedFavorites = new Set([...$('favorite-tuning-options').children].filter(group => group.open).map(group => group.dataset.count));
   const selectedTuning = $('tuning').value;
 
   const allTunings = document.createElement('option');
@@ -212,6 +232,39 @@ function renderTunings() {
     group.append(option);
   }
   $('tuning').value = selectedTuning;
+  $('tuning-label').textContent = tunings.find(tuning => tuning.key === selectedTuning)?.label || 'All tunings';
+  $('tuning-options').replaceChildren();
+  const addChoice = (parent, key, label) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.setAttribute('aria-pressed', String(key === selectedTuning));
+    button.onclick = () => {
+      $('tuning').value = key;
+      $('tuning-picker').open = false;
+      $('tuning-label').textContent = label;
+      $('tuning-label').focus();
+      $('tuning').onchange();
+    };
+    parent.append(button);
+  };
+  addChoice($('tuning-options'), '', 'All tunings');
+  let section;
+  let sectionCount;
+  for (const tuning of tunings) {
+    if (tuning.count !== sectionCount) {
+      sectionCount = tuning.count;
+      section = document.createElement('details');
+      section.dataset.count = String(sectionCount);
+      section.open = expanded.has(String(sectionCount));
+      const summary = document.createElement('summary');
+      summary.textContent = sectionCount + (sectionCount === 1 ? ' string' : ' strings');
+      section.append(summary);
+      $('tuning-options').append(section);
+    }
+    addChoice(section, tuning.key, (favoriteTunings.has(tuning.key) ? '★ ' : '') + tuning.label);
+  }
+
   $('favorite-tuning-options').replaceChildren();
   $('favorite-tunings-empty').hidden = tunings.length > 0;
   let fieldset;
@@ -219,9 +272,11 @@ function renderTunings() {
   for (const tuning of tunings) {
     if (tuning.count !== count) {
       count = tuning.count;
-      fieldset = document.createElement('fieldset');
+      fieldset = document.createElement('details');
+      fieldset.dataset.count = String(count);
+      fieldset.open = expandedFavorites.has(String(count));
       fieldset.className = 'favorite-tuning-group';
-      const legend = document.createElement('legend');
+      const legend = document.createElement('summary');
       legend.textContent = count + (count === 1 ? ' string' : ' strings');
       fieldset.append(legend);
       $('favorite-tuning-options').append(fieldset);
@@ -297,6 +352,7 @@ async function refresh(resetPage = false) {
         td.textContent = displayDate(row.updated_at);
         if (row.updated_at) td.title = row.updated_at;
       }
+      if (key === 'artist') renderArtist(td, row);
       if (key === 'directory') td.title = location.fullDirectory;
       if (key === 'filename') td.title = location.filename;
       if (key === 'format') {
