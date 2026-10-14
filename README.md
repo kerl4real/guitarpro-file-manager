@@ -42,11 +42,17 @@ cargo build --release -p cli
 The manager looks for `score_tool[.exe]` beside its executable, in the sibling
 parser's release/debug build, then on PATH. Open **Settings** in the top navigation, use **Browse** beside Executable location
 to choose another build, and select **Save settings**. The parser location is saved
-immediately and used for subsequent scans. Use **Browse** beside Score folder and **Scan folder**
+immediately and used for subsequent scans. Under **Settings → Scan folder**, use **Browse** beside Score folder and **Scan folder**
 to recursively index scores. **Import JSONL** opens a native file dialog for an
 existing extraction. The last scan's parser and folder are saved across restarts.
 
-Search metadata, select format/status filters, click column headers to sort, and
+Open **Settings → Library columns** to show or hide table columns. Column preferences
+save automatically and persist across restarts. **Settings → Favorite tunings** lets
+you pin tunings to the top of their string-count group in the filter. Favorites
+are marked with a star and saved across restarts; each group sorts favorites and
+remaining tunings alphabetically.
+
+Search metadata, select format/status/tuning filters, click column headers to sort, and
 navigate pages of 200 records. Wider tables scroll horizontally. Drag the divider between the table and score
 details to resize both panes together. The divider supports Left/Right arrows
 and double-clicking to restore the default split. Select a score to inspect its full extraction; use
@@ -67,7 +73,14 @@ The default library location is:
 
 The directory contains `library.sqlite3` and extraction/diagnostic files under
 `scans/`. Opening a schema version 1 library migrates it transactionally
-to version 2, preserving scores and adding saved settings. Rescans update matching
+to version 4, preserving scores and adding saved settings and indexed track tunings.
+Older libraries also migrate automatically, backfilling tunings and file modification
+dates from stored JSON. **Date modified** displays the local date and time from
+`file_metadata.updated_at` and sorts chronologically. Missing or invalid dates
+appear as a dash and sort last in either direction.
+Tuning filters match any track by its exact open-string MIDI pitches ordered by
+string number, including octave and any string count. Note names are display
+labels; missing, malformed, and percussion tunings are excluded from the filter. Rescans update matching
 paths. Missing scores are retained. Original score files are never edited.
 
 Environment overrides:

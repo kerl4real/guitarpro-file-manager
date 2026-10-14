@@ -46,8 +46,10 @@ const sorts = [...html.matchAll(/data-sort="([^"]+)"/g)].map(match => {
 });
 const calls = [];
 let revision = 0, busy = false, failScan = false, failOpen = false, failSave = false, savedParser = 'score_tool';
+let savedHiddenColumns = ['album'], failColumns = false;
+let savedFavorites = [], failFavorites = false;
 const row = {path: 'C:\\Scores\\日本語.gp5', title: '<script>safe text</script>',
-  artist: 'Björk', album: '', format: 'GP5', tempo: 120, tracks: 3, status: 'ok',
+  artist: 'Björk', album: '', format: 'GP5', tempo: 120, tracks: 3, status: 'ok', updated_at: '2026-10-13T14:30:00Z',
   record: JSON.stringify({metadata: {title: '日本語', tracks: [
     {index: 1, midi_program: 25, name: '<Lead guitar>', instrument: 'Acoustic Guitar',
       tuning: [{number: 1, midi: 64, note: 'E4'}, {number: 2, midi: 59, note: 'B3'}]},
@@ -59,9 +61,15 @@ const invoke = async (command, args) => {
   calls.push({command, args});
   switch (command) {
     case 'get_state': return {busy, cancelling: false, revision, message: busy ? 'Extracting…' : 'Ready',
-      parser: savedParser, folder: 'Saved folder', database: 'library.sqlite3'};
-    case 'query_library': return {rows: [row], page: Math.min(args.query.page, 1), page_size: 200, total: 205};
+      parser: savedParser, folder: 'Saved folder', database: 'library.sqlite3', hidden_columns: savedHiddenColumns, favorite_tunings: savedFavorites};
+    case 'query_library': return {rows: [row], page: Math.min(args.query.page, 1), page_size: 200, total: 205, tunings: ['64,59,55,50,45,40,35', '43,38,33,28', '64,59,55,50,45,40,35,30,25,20,15,10', '40,35,30,25', '60']};
     case 'pick_path': return responses[args.kind];
+    case 'save_favorite_tunings':
+      if (failFavorites) throw 'Cannot save favorites';
+      savedFavorites = [...args.tunings]; return;
+    case 'save_hidden_columns':
+      if (failColumns) throw 'Cannot save column preferences';
+      savedHiddenColumns = [...args.columns]; return;
     case 'save_parser':
       if (failSave) throw 'Cannot save settings';
       savedParser = args.parser; return;
@@ -97,10 +105,15 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(elements.rows.children[0].children[0].textContent, row.title);
 
   const cells = elements.rows.children[0].children;
-  assert.equal(cells.length, 9);
+  assert.equal(cells.length, 10);
   assert.equal(cells[1].textContent, '日本語.gp5');
   assert.equal(cells[2].textContent, 'Scores');
   assert.equal(cells[2].title, 'C:\\Scores');
+  assert.equal(cells[9].title, row.updated_at);
+  assert.equal(cells[9].textContent, new Date(row.updated_at).toLocaleString());
+  assert.equal(vm.runInContext('displayDate(null)', context), '—');
+  assert.equal(vm.runInContext("displayDate('invalid')", context), '—');
+
   for (const [filePath, filename, directory, fullDirectory] of [
     ['C:/Music/Artist/song.gp', 'song.gp', 'Artist', 'C:/Music/Artist'],
     ['/home/music/Artist/song.gp', 'song.gp', 'Artist', '/home/music/Artist'],
@@ -115,6 +128,45 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
     assert.equal(location.directory, directory);
     assert.equal(location.fullDirectory, fullDirectory);
   }
+
+  assert.equal(elements['show-album'].checked, false);
+  assert.equal(elements['col-album'].hidden, true);
+  assert.equal(cells[4].hidden, true);
+  assert.equal(sorts.find(button => button.dataset.sort === 'album').parentElement.hidden, true);
+  assert.equal(elements['score-table'].style.width, '1140px');
+  elements['show-album'].checked = true;
+  await elements['show-album'].onchange();
+  assert.deepEqual(savedHiddenColumns, []);
+  assert.equal(cells[4].hidden, false);
+  elements['show-directory'].checked = false;
+  await elements['show-directory'].onchange();
+  assert.deepEqual(savedHiddenColumns, ['directory']);
+  await vm.runInContext('refresh()', context);
+  assert.equal(elements.rows.children[0].children[2].hidden, true, 'Hide columns on newly rendered rows');
+  vm.runInContext('initialized = false', context);
+  await vm.runInContext('state()', context);
+  assert.equal(elements['show-directory'].checked, false, 'Restore saved choices on initialization');
+  failColumns = true;
+  elements['show-directory'].checked = true;
+  await elements['show-directory'].onchange();
+  assert.equal(elements['show-directory'].checked, false, 'Revert on save failure');
+  assert.equal(elements['columns-message'].textContent, 'Cannot save column preferences');
+  failColumns = false;
+  elements['show-directory'].checked = true;
+  await elements['show-directory'].onchange();
+  for (const key of ['filename', 'directory', 'artist', 'album', 'format', 'tempo', 'tracks', 'status', 'updated_at']) {
+    elements['show-' + key].checked = false;
+    await elements['show-' + key].onchange();
+  }
+  assert.equal(elements['show-title'].disabled, true, 'Keep a visible column');
+  assert.equal(elements['show-album'].disabled, false, 'Allow hidden columns to be restored');
+  for (const key of ['filename', 'directory', 'artist', 'album', 'format', 'tempo', 'tracks', 'status', 'updated_at']) {
+    elements['show-' + key].checked = true;
+    await elements['show-' + key].onchange();
+  }
+  assert.equal(elements['show-title'].disabled, false);
+  assert.equal(elements['col-directory'].hidden, false);
+  assert.equal(elements['score-table'].style.width, '1290px');
 
   const pointer = (clientX, pointerId = 1) => ({clientX, pointerId, button: 0, preventDefault() {}});
   assert.ok(sorts.every(button => button.parentElement.children.length === 1));
@@ -207,6 +259,20 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
   const query = calls.filter(call => call.command === 'query_library').at(-1).args.query;
   assert.equal(query.format, 'GP5');
   assert.equal(query.page, 0);
+  assert.deepEqual(elements.tuning.children.slice(1).map(group => group.label),
+    ['1 string', '4 strings', '7 strings', '12 strings']);
+  assert.equal(elements.tuning.children[1].children[0].textContent, 'C4');
+  assert.deepEqual(elements.tuning.children[2].children.map(option => option.textContent),
+    ['C#1 · F#1 · B1 · E2', 'E1 · A1 · D2 · G2']);
+  assert.equal(elements.tuning.children[3].children[0].textContent, 'B1 · E2 · A2 · D3 · G3 · B3 · E4');
+
+  elements.tuning.value = '43,38,33,28';
+  await elements.tuning.onchange();
+  const tuningQuery = calls.filter(call => call.command === 'query_library').at(-1).args.query;
+  assert.equal(tuningQuery.tuning, '43,38,33,28');
+  assert.equal(tuningQuery.page, 0);
+  assert.equal(elements.tuning.value, '43,38,33,28');
+
 
   assert.equal(elements['metadata-summary'].hidden, true);
   assert.equal(elements['raw-details'].hidden, true);
@@ -227,7 +293,7 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(vm.runInContext('instrumentIcon(iconTrack).symbol', context), '🥁');
   assert.equal(trackCells[1].children[0].textContent, '<Lead guitar>', 'Render names as safe text');
   assert.equal(trackCells[1].children[1].textContent, 'Acoustic Guitar');
-  assert.equal(trackCells[2].textContent, 'E4 · B3');
+  assert.equal(trackCells[2].textContent, 'B3 · E4');
   assert.equal(elements['track-rows'].children[1].children[2].textContent, '—');
   assert.equal(elements['track-rows'].children[2].children[0].children[0].textContent, '♫');
   assert.equal(elements['track-rows'].children[2].children[1].children[0].textContent, 'Unnamed track');
@@ -264,7 +330,7 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
   await vm.runInContext('state()', context);
   assert.match(elements.message.textContent, /file was removed/);
 
-  for (const key of ['filename', 'directory']) {
+  for (const key of ['filename', 'directory', 'updated_at']) {
     const button = sorts.find(button => button.dataset.sort === key);
     button.click();
     await flush();
@@ -306,6 +372,38 @@ const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();
   failOpen = false;
   await elements.open.click();
   assert.equal(calls.filter(call => call.command === 'open_score').at(-1).args.path, row.path);
+
+  const favoriteCheckbox = key => elements['favorite-tuning-options'].children
+    .flatMap(group => group.children.slice(1)).map(label => label.children[0])
+    .find(checkbox => checkbox.dataset.tuning === key);
+  const bassKey = '43,38,33,28';
+  const selectedTuning = elements.tuning.value;
+  favoriteCheckbox(bassKey).checked = true;
+  await favoriteCheckbox(bassKey).onchange();
+  assert.deepEqual(savedFavorites, [bassKey]);
+  assert.equal(elements.tuning.children[2].children[0].textContent, '★ E1 · A1 · D2 · G2');
+  assert.equal(elements.tuning.children[2].children[0].value, bassKey);
+  assert.equal(elements.tuning.value, selectedTuning, 'Favoriting preserves active filtering');
+  vm.runInContext('initialized = false; favoriteTunings = new Set()', context);
+  await vm.runInContext('state()', context);
+  assert.equal(favoriteCheckbox(bassKey).checked, true, 'Restore favorites at startup');
+  failFavorites = true;
+  favoriteCheckbox(bassKey).checked = false;
+  await favoriteCheckbox(bassKey).onchange();
+  assert.equal(favoriteCheckbox(bassKey).checked, true, 'Revert failed favorite save');
+  assert.equal(elements['favorite-tunings-message'].textContent, 'Cannot save favorites');
+  failFavorites = false;
+  // Multiple favorites in one group still sort alphabetically.
+  favoriteCheckbox('40,35,30,25').checked = true;
+  await favoriteCheckbox('40,35,30,25').onchange();
+  assert.deepEqual(elements.tuning.children[2].children.map(option => option.textContent),
+    ['★ C#1 · F#1 · B1 · E2', '★ E1 · A1 · D2 · G2']);
+  for (const key of ['40,35,30,25', bassKey]) {
+    favoriteCheckbox(key).checked = false;
+    await favoriteCheckbox(key).onchange();
+  }
+  assert.deepEqual(savedFavorites, []);
+  assert.equal(elements.tuning.children[2].children[0].textContent, 'C#1 · F#1 · B1 · E2');
 
   failScan = true;
   await elements.scan.click();

@@ -26,6 +26,8 @@ struct AppState {
     parser: String,
     folder: String,
     database: String,
+    hidden_columns: Vec<String>,
+    favorite_tunings: Vec<String>,
 }
 
 fn default_parser() -> String {
@@ -73,6 +75,8 @@ async fn get_state(backend: State<'_, Backend>) -> Result<AppState> {
         let settings = library.settings(&parser)?;
         Ok(AppState {
             job: jobs.snapshot()?,
+            hidden_columns: library.hidden_columns()?,
+            favorite_tunings: library.favorite_tunings()?,
             parser: settings.parser,
             folder: settings.folder,
             database: library.database.to_string_lossy().into_owned(),
@@ -94,6 +98,22 @@ async fn query_library(backend: State<'_, Backend>, query: Query) -> Result<Page
 async fn save_parser(backend: State<'_, Backend>, parser: String) -> Result<()> {
     let library = backend.library.clone();
     tauri::async_runtime::spawn_blocking(move || library.save_parser(&parser))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn save_hidden_columns(backend: State<'_, Backend>, columns: Vec<String>) -> Result<()> {
+    let library = backend.library.clone();
+    tauri::async_runtime::spawn_blocking(move || library.save_hidden_columns(&columns))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn save_favorite_tunings(backend: State<'_, Backend>, tunings: Vec<String>) -> Result<()> {
+    let library = backend.library.clone();
+    tauri::async_runtime::spawn_blocking(move || library.save_favorite_tunings(&tunings))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -199,6 +219,8 @@ fn main() {
             get_state,
             query_library,
             save_parser,
+            save_hidden_columns,
+            save_favorite_tunings,
             start_scan,
             cancel_job,
             pick_path,

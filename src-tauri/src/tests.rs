@@ -460,3 +460,263 @@ fn filename_and_directory_sort_by_displayed_values_before_pagination() {
     assert_eq!(page.rows.len(), 5);
     assert!(page.rows[0].path.ends_with("song200.gp5"));
 }
+
+#[test]
+fn tuning_normalization_migration_filters_and_rescans() {
+    let (dir, library) = library();
+    let first = dir.path().join("bass.gp5");
+    let second = dir.path().join("extended.gp5");
+    let track = |pitches: &[u8]| {
+        json!({"kind": "stringed", "tuning": pitches.iter().enumerate()
+        .rev().map(|(i, midi)| json!({"number": i+1, "midi": midi, "note": "ignored label"})).collect::<Vec<_>>()})
+    };
+    let bass = track(&[43, 38, 33, 28]);
+    let seven = track(&[64, 59, 55, 50, 45, 40, 35]);
+    let mut a = record(&first, 120);
+    a["metadata"]["tracks"] = json!([bass.clone(), bass.clone(), seven.clone()]);
+    let mut b = record(&second, 90);
+    b["metadata"]["tracks"] = json!([seven, track(&[60]), track(&[64,59,55,50,45,40,35,30,25,20,15,10]),
+        {"kind":"percussion", "tuning":[{"number":1,"midi":43}]},
+        {"tuning":[{"number":1,"midi":40},{"number":1,"midi":45}]},
+        {"tuning":[{"number":2,"midi":40}]},
+        {"tuning":[{"number":1,"midi":128}]}, {"tuning":[]},
+        {"tuning":[{"number":1,"note":"E2"}]}]);
+    library
+        .import_jsonl(&write(dir.path(), &[a.clone(), b]))
+        .unwrap();
+    let matches = |library: &Library, key: &str| {
+        library
+            .query(Query {
+                tuning: key.into(),
+                ..Query::default()
+            })
+            .unwrap()
+            .total
+    };
+    assert_eq!(matches(&library, "43,38,33,28"), 1);
+    assert_eq!(matches(&library, "64,59,55,50,45,40,35"), 2);
+    assert_eq!(matches(&library, "60"), 1);
+    assert_eq!(matches(&library, "64,59,55,50,45,40,35,30,25,20,15,10"), 1);
+    assert_eq!(matches(&library, "43"), 0);
+    assert_eq!(matches(&library, "40"), 0);
+    assert_eq!(library.query(Query::default()).unwrap().tunings.len(), 4);
+    assert_eq!(
+        library
+            .query(Query {
+                tuning: "43,38,33,28".into(),
+                status: "error".into(),
+                ..Query::default()
+            })
+            .unwrap()
+            .total,
+        0
+    );
+    // Recreate an actual v2 database; opening it must backfill without a scan.
+    library
+        .connect()
+        .unwrap()
+        .execute_batch("DROP TABLE score_tracks; PRAGMA user_version=2;")
+        .unwrap();
+    let reopened = Library::new(library.directory.clone()).unwrap();
+    assert_eq!(matches(&reopened, "43,38,33,28"), 1);
+    assert_eq!(reopened.query(Query::default()).unwrap().rows.len(), 2);
+    assert_eq!(
+        reopened
+            .connect()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    a["metadata"]["tracks"] = json!([track(&[64, 59, 55, 50, 45, 38])]);
+    let bad = json!({"schema_version":99});
+    assert!(reopened
+        .import_jsonl(&write(dir.path(), &[a.clone(), bad]))
+        .is_err());
+    assert_eq!(matches(&reopened, "43,38,33,28"), 1);
+    reopened.import_jsonl(&write(dir.path(), &[a])).unwrap();
+    assert_eq!(matches(&reopened, "43,38,33,28"), 0);
+    assert_eq!(matches(&reopened, "64,59,55,50,45,38"), 1);
+    let error = json!({"schema_version":1,"path":first.to_string_lossy(),"status":"error","error":"broken"});
+    reopened.import_jsonl(&write(dir.path(), &[error])).unwrap();
+    assert_eq!(matches(&reopened, "64,59,55,50,45,38"), 0);
+    assert!(!reopened
+        .query(Query::default())
+        .unwrap()
+        .tunings
+        .contains(&"64,59,55,50,45,38".into()));
+}
+
+#[test]
+fn column_preferences_persist_validate_and_preserve_scan_settings() {
+    let (_dir, library) = library();
+    assert!(library.hidden_columns().unwrap().is_empty());
+    library
+        .save_hidden_columns(&["album".into(), "directory".into(), "album".into()])
+        .unwrap();
+    let reopened = Library::new(library.directory.clone()).unwrap();
+    assert_eq!(reopened.hidden_columns().unwrap(), ["directory", "album"]);
+    reopened.save_parser("score_tool").unwrap();
+    reopened
+        .save_settings(&Settings {
+            parser: "new_parser".into(),
+            folder: "scores".into(),
+        })
+        .unwrap();
+    assert_eq!(reopened.hidden_columns().unwrap(), ["directory", "album"]);
+    assert!(reopened.save_hidden_columns(&["unknown".into()]).is_err());
+    let all = crate::storage::COLUMNS
+        .iter()
+        .map(|column| column.to_string())
+        .collect::<Vec<_>>();
+    assert!(reopened.save_hidden_columns(&all).is_err());
+    assert_eq!(reopened.hidden_columns().unwrap(), ["directory", "album"]);
+    reopened.save_hidden_columns(&[]).unwrap();
+    assert!(Library::new(library.directory.clone())
+        .unwrap()
+        .hidden_columns()
+        .unwrap()
+        .is_empty());
+    assert_eq!(reopened.settings("").unwrap().parser, "new_parser");
+}
+
+#[test]
+fn modification_dates_backfill_sort_and_update_transactionally() {
+    let (dir, library) = library();
+    let paths =
+        ["early", "late", "missing", "invalid"].map(|name| dir.path().join(format!("{name}.gp5")));
+    let mut records = paths
+        .iter()
+        .map(|path| record(path, 120))
+        .collect::<Vec<_>>();
+    // Offsets must sort by instant rather than the original timestamp text.
+    records[0]["file_metadata"] = json!({"updated_at":"2026-10-13T12:00:00+02:00"});
+    records[1]["file_metadata"] = json!({"updated_at":"2026-10-13T09:00:00-04:00"});
+    records[3]["file_metadata"] = json!({"updated_at":"invalid"});
+    library.import_jsonl(&write(dir.path(), &records)).unwrap();
+    library.save_hidden_columns(&["album".into()]).unwrap();
+    // Restore the actual previous schema to exercise the ALTER and JSON backfill.
+    library.connect().unwrap().execute_batch(
+        "DROP INDEX scores_updated_at; ALTER TABLE scores DROP COLUMN updated_at; PRAGMA user_version=3;"
+    ).unwrap();
+    let reopened = Library::new(library.directory.clone()).unwrap();
+    assert_eq!(reopened.hidden_columns().unwrap(), ["album"]);
+    for descending in [false, true] {
+        let page = reopened
+            .query(Query {
+                sort: "updated_at".into(),
+                descending,
+                ..Query::default()
+            })
+            .unwrap();
+        let expected = if descending { &paths[1] } else { &paths[0] };
+        assert_eq!(
+            page.rows[0].path,
+            normalized_path(&expected.to_string_lossy()).unwrap()
+        );
+        assert!(page.rows[0].updated_at.is_some());
+        assert!(page.rows[1].updated_at.is_some());
+        assert!(page.rows[2..].iter().all(|row| row.updated_at.is_none()));
+    }
+    records[0]["file_metadata"]["updated_at"] = json!("2026-10-14T00:00:00Z");
+    assert!(reopened
+        .import_jsonl(&write(
+            dir.path(),
+            &[records[0].clone(), json!({"schema_version":99})]
+        ))
+        .is_err());
+    let query = || Query {
+        sort: "updated_at".into(),
+        descending: true,
+        ..Query::default()
+    };
+    assert_eq!(
+        reopened.query(query()).unwrap().rows[0].path,
+        normalized_path(&paths[1].to_string_lossy()).unwrap()
+    );
+    reopened
+        .import_jsonl(&write(dir.path(), &[records[0].clone()]))
+        .unwrap();
+    assert_eq!(
+        reopened.query(query()).unwrap().rows[0]
+            .updated_at
+            .as_deref(),
+        Some("2026-10-14T00:00:00Z")
+    );
+    // File metadata can still be available when parsing fails.
+    let mut error = json!({"schema_version":1,"path":paths[0].to_string_lossy(),"status":"error","error":"broken",
+        "file_metadata":{"updated_at":"2026-10-15T00:00:00Z"}});
+    reopened
+        .import_jsonl(&write(dir.path(), &[error.clone()]))
+        .unwrap();
+    assert_eq!(
+        reopened.query(query()).unwrap().rows[0]
+            .updated_at
+            .as_deref(),
+        Some("2026-10-15T00:00:00Z")
+    );
+    error["file_metadata"] = Value::Null;
+    reopened.import_jsonl(&write(dir.path(), &[error])).unwrap();
+    assert_eq!(
+        reopened.query(query()).unwrap().rows[0].path,
+        normalized_path(&paths[1].to_string_lossy()).unwrap()
+    );
+}
+
+#[test]
+fn modification_date_sorting_precedes_pagination() {
+    let (dir, library) = library();
+    let records = (0..205)
+        .map(|i| {
+            let mut value = record(&dir.path().join(format!("song-{i:03}.gp5")), 120);
+            // Reverse filename order relative to modification time.
+            value["file_metadata"] =
+                json!({"updated_at":format!("2026-10-13T00:{:02}:{:02}Z", (204-i)/60, (204-i)%60)});
+            value
+        })
+        .collect::<Vec<_>>();
+    library.import_jsonl(&write(dir.path(), &records)).unwrap();
+    let first = library
+        .query(Query {
+            sort: "updated_at".into(),
+            ..Query::default()
+        })
+        .unwrap();
+    assert_eq!(first.total, 205);
+    assert!(first.rows[0].path.ends_with("song-204.gp5"));
+    let second = library
+        .query(Query {
+            sort: "updated_at".into(),
+            page: 1,
+            ..Query::default()
+        })
+        .unwrap();
+    assert_eq!(second.rows.len(), 5);
+    assert!(second.rows[0].path.ends_with("song-004.gp5"));
+}
+
+#[test]
+fn favorite_tunings_persist_validate_and_preserve_other_preferences() {
+    let (_dir, library) = library();
+    assert!(library.favorite_tunings().unwrap().is_empty());
+    let bass = "43,38,33,28".to_string();
+    let seven = "64,59,55,50,45,40,35".to_string();
+    library
+        .save_favorite_tunings(&[seven.clone(), bass.clone(), bass.clone()])
+        .unwrap();
+    let reopened = Library::new(library.directory.clone()).unwrap();
+    assert_eq!(
+        reopened.favorite_tunings().unwrap(),
+        [bass.clone(), seven.clone()]
+    );
+    reopened.save_hidden_columns(&["album".into()]).unwrap();
+    reopened.save_parser("score_tool").unwrap();
+    for key in ["", "128", "-1", "64,,40", "E2,A2", "040", "40,"] {
+        assert!(reopened.save_favorite_tunings(&[key.into()]).is_err());
+    }
+    assert_eq!(reopened.favorite_tunings().unwrap(), [bass, seven]);
+    reopened.save_favorite_tunings(&[]).unwrap();
+    assert!(reopened.favorite_tunings().unwrap().is_empty());
+    assert_eq!(reopened.hidden_columns().unwrap(), ["album"]);
+    assert_eq!(reopened.settings("").unwrap().parser, "score_tool");
+}

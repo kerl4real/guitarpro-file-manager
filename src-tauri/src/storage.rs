@@ -1,4 +1,4 @@
-use rusqlite::{functions::FunctionFlags, params, Connection};
+use rusqlite::{functions::FunctionFlags, params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -7,6 +7,35 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 pub type Result<T> = std::result::Result<T, String>;
+
+pub const COLUMNS: [&str; 10] = [
+    "title",
+    "filename",
+    "directory",
+    "artist",
+    "album",
+    "format",
+    "tempo",
+    "tracks",
+    "status",
+    "updated_at",
+];
+
+fn validate_hidden_columns(columns: &[String]) -> Result<()> {
+    if columns
+        .iter()
+        .any(|column| !COLUMNS.contains(&column.as_str()))
+    {
+        return Err("Unsupported library column".into());
+    }
+    if COLUMNS
+        .iter()
+        .all(|column| columns.iter().any(|hidden| hidden == column))
+    {
+        return Err("Keep at least one column visible".into());
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct Library {
@@ -20,6 +49,7 @@ pub struct Query {
     pub search: String,
     pub format: String,
     pub status: String,
+    pub tuning: String,
     pub sort: String,
     pub descending: bool,
     pub page: usize,
@@ -36,6 +66,7 @@ pub struct Score {
     pub tracks: Option<i64>,
     pub status: String,
     pub record: String,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,6 +75,7 @@ pub struct Page {
     pub total: usize,
     pub page: usize,
     pub page_size: usize,
+    pub tunings: Vec<String>,
 }
 
 #[derive(Default, Clone, Serialize)]
@@ -111,6 +143,65 @@ fn number(metadata: &Value, key: &str) -> Result<Option<i64>> {
     }
 }
 
+fn updated_at(record: &Value) -> Option<&str> {
+    record
+        .pointer("/file_metadata/updated_at")
+        .and_then(Value::as_str)
+}
+
+// MIDI pitches, ordered by string number, are the identity; labels are display only.
+// Require contiguous, unique string numbers, but impose no instrument string count.
+fn tuning_key(track: &Value) -> Option<String> {
+    if track.get("kind").and_then(Value::as_str) == Some("percussion") {
+        return None;
+    }
+    let strings = track.get("tuning")?.as_array()?;
+    if strings.is_empty() {
+        return None;
+    }
+    let mut pitches = strings
+        .iter()
+        .map(|string| {
+            let number = string.get("number")?.as_u64()?;
+            let midi = string.get("midi")?.as_u64()?;
+            (number > 0 && midi <= 127).then_some((number, midi))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    pitches.sort_by_key(|(number, _)| *number);
+    if pitches
+        .iter()
+        .enumerate()
+        .any(|(i, (number, _))| *number != i as u64 + 1)
+    {
+        return None;
+    }
+    Some(
+        pitches
+            .iter()
+            .map(|(_, midi)| midi.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn index_tracks(db: &Connection, path: &str, record: &Value) -> Result<()> {
+    db.execute("DELETE FROM score_tracks WHERE score_path=?", [path])
+        .map_err(|e| e.to_string())?;
+    if record.get("status").and_then(Value::as_str) != Some("ok") {
+        return Ok(());
+    }
+    if let Some(tracks) = record.pointer("/metadata/tracks").and_then(Value::as_array) {
+        for (ordinal, track) in tracks.iter().enumerate() {
+            db.execute(
+                "INSERT INTO score_tracks (score_path, ordinal, tuning_key) VALUES (?, ?, ?)",
+                params![path, ordinal as i64, tuning_key(track)],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 impl Library {
     pub fn new(directory: PathBuf) -> Result<Self> {
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -122,7 +213,7 @@ impl Library {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        if !(0..=2).contains(&version) {
+        if !(0..=4).contains(&version) {
             return Err(format!("Unsupported database schema: {version}"));
         }
         let tx = db.transaction().map_err(|e| e.to_string())?;
@@ -133,15 +224,52 @@ impl Library {
             CREATE INDEX IF NOT EXISTS scores_artist ON scores(artist);
             CREATE INDEX IF NOT EXISTS scores_format ON scores(format);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            PRAGMA user_version = 2;",
+            CREATE TABLE IF NOT EXISTS score_tracks (
+                score_path TEXT NOT NULL REFERENCES scores(path) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL, tuning_key TEXT,
+                PRIMARY KEY (score_path, ordinal));
+            CREATE INDEX IF NOT EXISTS score_tracks_tuning ON score_tracks(tuning_key, score_path);",
         )
         .map_err(|e| e.to_string())?;
+        if version < 4 {
+            let has_updated_at = tx
+                .prepare("PRAGMA table_info(scores)")
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+                .iter()
+                .any(|column| column == "updated_at");
+            if !has_updated_at {
+                tx.execute_batch("ALTER TABLE scores ADD COLUMN updated_at TEXT;")
+                    .map_err(|e| e.to_string())?;
+            }
+            let mut statement = tx
+                .prepare("SELECT path, record FROM scores")
+                .map_err(|e| e.to_string())?;
+            let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let path: String = row.get(0).map_err(|e| e.to_string())?;
+                let raw: String = row.get(1).map_err(|e| e.to_string())?;
+                let record: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                if version < 3 {
+                    index_tracks(&tx, &path, &record)?;
+                }
+                tx.execute("UPDATE scores SET updated_at=CASE WHEN julianday(?1) IS NOT NULL THEN ?1 END WHERE path=?2",
+                    params![updated_at(&record), path]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS scores_updated_at ON scores(julianday(updated_at)); PRAGMA user_version=4;")
+            .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(library)
     }
 
     pub fn connect(&self) -> Result<Connection> {
         let db = Connection::open(&self.database).map_err(|e| e.to_string())?;
+        db.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|e| e.to_string())?;
         db.busy_timeout(Duration::from_secs(30))
             .map_err(|e| e.to_string())?;
         Ok(db)
@@ -170,6 +298,79 @@ impl Library {
             }
         }
         Ok(settings)
+    }
+
+    pub fn hidden_columns(&self) -> Result<Vec<String>> {
+        let raw: Option<String> = self
+            .connect()?
+            .query_row(
+                "SELECT value FROM settings WHERE key='hidden_columns'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let columns = match raw {
+            Some(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string())?,
+            None => Vec::new(),
+        };
+        validate_hidden_columns(&columns)?;
+        Ok(columns)
+    }
+
+    pub fn save_hidden_columns(&self, columns: &[String]) -> Result<()> {
+        validate_hidden_columns(columns)?;
+        // Store known columns in table order, removing duplicates.
+        let columns: Vec<_> = COLUMNS
+            .iter()
+            .filter(|column| columns.iter().any(|hidden| hidden == **column))
+            .collect();
+        let value = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
+        self.connect()?.execute(
+            "INSERT INTO settings VALUES ('hidden_columns', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![value],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn favorite_tunings(&self) -> Result<Vec<String>> {
+        let raw: Option<String> = self
+            .connect()?
+            .query_row(
+                "SELECT value FROM settings WHERE key='favorite_tunings'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match raw {
+            Some(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn save_favorite_tunings(&self, tunings: &[String]) -> Result<()> {
+        for key in tunings {
+            if key.is_empty()
+                || key.split(',').any(|pitch| {
+                    pitch
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|midi| *midi <= 127)
+                        .is_none_or(|midi| midi.to_string() != pitch)
+                })
+            {
+                return Err("Invalid tuning key".into());
+            }
+        }
+        let mut tunings = tunings.to_vec();
+        tunings.sort();
+        tunings.dedup();
+        self.connect()?.execute(
+            "INSERT INTO settings VALUES ('favorite_tunings', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![serde_json::to_string(&tunings).map_err(|e| e.to_string())?],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn save_parser(&self, parser: &str) -> Result<()> {
@@ -258,10 +459,11 @@ impl Library {
                     .to_string_lossy()
                     .to_uppercase();
                 tx.execute(
-                    "INSERT INTO scores VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "INSERT INTO scores (path, title, artist, album, format, tempo, tracks, status, record, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN julianday(?10) IS NOT NULL THEN ?10 END)
                     ON CONFLICT(path) DO UPDATE SET title=excluded.title, artist=excluded.artist,
                     album=excluded.album, format=excluded.format, tempo=excluded.tempo,
-                    tracks=excluded.tracks, status=excluded.status, record=excluded.record",
+                    tracks=excluded.tracks, status=excluded.status, record=excluded.record, updated_at=excluded.updated_at",
                     params![
                         path,
                         if title.is_empty() {
@@ -279,10 +481,12 @@ impl Library {
                         number(metadata, "initial_tempo")?,
                         number(metadata, "track_count")?,
                         status,
-                        record.to_string()
+                        record.to_string(),
+                        updated_at(&record)
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                index_tracks(&tx, &path, &record)?;
                 Ok(())
             })();
             result.map_err(|error| format!("Line {}: {error}", index + 1))?;
@@ -300,10 +504,16 @@ impl Library {
             "" => "title",
             "filename" => "score_filename(path)",
             "directory" => "score_directory(path)",
+            "updated_at" => "julianday(updated_at)",
             "path" | "title" | "artist" | "album" | "format" | "tempo" | "tracks" | "status" => {
                 &query.sort
             }
             _ => return Err("Unsupported sort column".into()),
+        };
+        let nulls = if query.sort == "updated_at" {
+            "NULLS LAST"
+        } else {
+            ""
         };
         let direction = if query.descending { "DESC" } else { "ASC" };
         let pattern = format!(
@@ -316,7 +526,9 @@ impl Library {
         );
         let filter = r"WHERE (title LIKE ?1 ESCAPE '\' OR artist LIKE ?1 ESCAPE '\'
             OR album LIKE ?1 ESCAPE '\' OR path LIKE ?1 ESCAPE '\' OR record LIKE ?1 ESCAPE '\')
-            AND (?2 = '' OR format = ?2) AND (?3 = '' OR status = ?3)";
+            AND (?2 = '' OR format = ?2) AND (?3 = '' OR status = ?3)
+            AND (?4 = '' OR EXISTS (SELECT 1 FROM score_tracks t
+                WHERE t.score_path=scores.path AND t.tuning_key=?4))";
         let mut db = self.connect()?;
         for (name, directory) in [("score_filename", false), ("score_directory", true)] {
             db.create_scalar_function(
@@ -334,37 +546,46 @@ impl Library {
         let total: usize = tx
             .query_row(
                 &format!("SELECT COUNT(*) FROM scores {filter}"),
-                params![pattern, query.format, query.status],
+                params![pattern, query.format, query.status, query.tuning],
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
         let page_size = 200;
         let page = query.page.min(total.saturating_sub(1) / page_size);
         let mut statement = tx.prepare(&format!("SELECT path, title, artist, album, format, tempo,
-            tracks, status, record FROM scores {filter} ORDER BY {column} COLLATE NOCASE {direction},
+            tracks, status, record, updated_at FROM scores {filter} ORDER BY {column} COLLATE NOCASE {direction} {nulls},
             path ASC LIMIT {page_size} OFFSET {}", page * page_size)).map_err(|e| e.to_string())?;
         let rows = statement
-            .query_map(params![pattern, query.format, query.status], |row| {
-                Ok(Score {
-                    path: row.get(0)?,
-                    title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    artist: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    album: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    format: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    tempo: row.get(5)?,
-                    tracks: row.get(6)?,
-                    status: row.get(7)?,
-                    record: row.get(8)?,
-                })
-            })
+            .query_map(
+                params![pattern, query.format, query.status, query.tuning],
+                |row| {
+                    Ok(Score {
+                        path: row.get(0)?,
+                        title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        artist: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        album: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        format: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        tempo: row.get(5)?,
+                        tracks: row.get(6)?,
+                        status: row.get(7)?,
+                        record: row.get(8)?,
+                        updated_at: row.get(9)?,
+                    })
+                },
+            )
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        let tunings = tx.prepare("SELECT DISTINCT tuning_key FROM score_tracks WHERE tuning_key IS NOT NULL ORDER BY tuning_key")
+            .map_err(|e| e.to_string())?
+            .query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
         Ok(Page {
             rows,
             total,
             page,
             page_size,
+            tunings,
         })
     }
 

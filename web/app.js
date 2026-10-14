@@ -3,6 +3,57 @@ let rows = [], selected = null, sort = 'title', descending = false, page = 0;
 let initialized = false, lastMessage = '', lastRevision = -1, requestId = 0;
 let acceptingJob = false, polling = false, savingSettings = false, savedParser = '';
 
+const libraryColumns = [
+  ['title', 200], ['filename', 200], ['directory', 150], ['artist', 150],
+  ['album', 150], ['format', 70], ['tempo', 60], ['tracks', 60], ['status', 70], ['updated_at', 180]
+];
+let hiddenColumns = new Set(), savingColumns = false;
+let favoriteTunings = new Set(), availableTunings = [], savingFavorites = false;
+
+function applyColumnVisibility() {
+  const visibleCount = libraryColumns.filter(([key]) => !hiddenColumns.has(key)).length;
+  for (const [key] of libraryColumns) {
+    const hidden = hiddenColumns.has(key);
+    $('col-' + key).hidden = hidden;
+    $('show-' + key).checked = !hidden;
+    $('show-' + key).disabled = !initialized || savingColumns || (!hidden && visibleCount === 1);
+  }
+  for (const button of document.querySelectorAll('[data-sort]')) {
+    button.parentElement.hidden = hiddenColumns.has(button.dataset.sort);
+  }
+  for (const row of $('rows').children) {
+    for (const cell of row.children) cell.hidden = hiddenColumns.has(cell.dataset.column);
+  }
+  const width = libraryColumns.reduce((sum, [key, width]) => sum + (hiddenColumns.has(key) ? 0 : width), 0);
+  $('score-table').style.setProperty('width', width + 'px');
+}
+
+for (const [key] of libraryColumns) $('show-' + key).onchange = async () => {
+  if (!initialized || savingColumns) return;
+  const previous = new Set(hiddenColumns);
+  if ($('show-' + key).checked) hiddenColumns.delete(key);
+  else hiddenColumns.add(key);
+  if (hiddenColumns.size === libraryColumns.length) {
+    hiddenColumns = previous;
+    applyColumnVisibility();
+    return;
+  }
+  savingColumns = true;
+  applyColumnVisibility();
+  $('columns-message').textContent = 'Saving...';
+  try {
+    await invoke('save_hidden_columns', {columns: [...hiddenColumns]});
+    $('columns-message').textContent = 'Column preferences saved.';
+  } catch (error) {
+    hiddenColumns = previous;
+    $('columns-message').textContent = displayMessage(error.message);
+  } finally {
+    savingColumns = false;
+    applyColumnVisibility();
+  }
+};
+applyColumnVisibility();
+
 async function invoke(command, args) {
   try {
     return await window.__TAURI__.core.invoke(command, args);
@@ -27,6 +78,12 @@ function setPathField(id, path) {
 function pathFieldValue(id) {
   const original = originalPaths[id];
   return original !== undefined && $(id).value === displayPath(original) ? original : $(id).value;
+}
+
+function displayDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
 function fileLocation(path) {
@@ -112,7 +169,7 @@ function detail(row) {
     }
     const tuning = document.createElement('td');
     tuning.textContent = Array.isArray(track?.tuning) && track.tuning.length
-      ? track.tuning.map(string => string?.note ?? string?.midi ?? '—').join(' · ') : '—';
+      ? [...track.tuning].sort((a, b) => (b?.number ?? 0) - (a?.number ?? 0)).map(string => string?.note ?? string?.midi ?? '—').join(' · ') : '—';
     tr.append(instrument);
     tr.append(name);
     tr.append(tuning);
@@ -127,14 +184,93 @@ function detail(row) {
   for (const tr of $('rows').children) tr.classList.toggle('selected', tr.dataset.path === row?.path);
 }
 
+function renderTunings() {
+  const selectedTuning = $('tuning').value;
+
+  const allTunings = document.createElement('option');
+  allTunings.value = '';
+  allTunings.textContent = 'All tunings';
+  $('tuning').replaceChildren(allTunings);
+  // Keep a selected tuning visible if a rescan removes its last matching track.
+  const tunings = [...new Set([...availableTunings, ...favoriteTunings, ...(selectedTuning ? [selectedTuning] : [])])].map(key => {
+    const pitches = key.split(',').map(Number).reverse();
+    const notes = pitches.map(midi => ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][midi % 12] + (Math.floor(midi / 12) - 1));
+    return {key, count: pitches.length, label: notes.join(' · ')};
+  }).sort((a, b) => a.count - b.count || Number(favoriteTunings.has(b.key)) - Number(favoriteTunings.has(a.key)) || a.label.localeCompare(b.label, 'en') || a.key.localeCompare(b.key));
+  let group;
+  let stringCount;
+  for (const tuning of tunings) {
+    if (tuning.count !== stringCount) {
+      stringCount = tuning.count;
+      group = document.createElement('optgroup');
+      group.label = stringCount + (stringCount === 1 ? ' string' : ' strings');
+      $('tuning').append(group);
+    }
+    const option = document.createElement('option');
+    option.value = tuning.key;
+    option.textContent = (favoriteTunings.has(tuning.key) ? '★ ' : '') + tuning.label;
+    group.append(option);
+  }
+  $('tuning').value = selectedTuning;
+  $('favorite-tuning-options').replaceChildren();
+  $('favorite-tunings-empty').hidden = tunings.length > 0;
+  let fieldset;
+  let count;
+  for (const tuning of tunings) {
+    if (tuning.count !== count) {
+      count = tuning.count;
+      fieldset = document.createElement('fieldset');
+      fieldset.className = 'favorite-tuning-group';
+      const legend = document.createElement('legend');
+      legend.textContent = count + (count === 1 ? ' string' : ' strings');
+      fieldset.append(legend);
+      $('favorite-tuning-options').append(fieldset);
+    }
+    const label = document.createElement('label');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = favoriteTunings.has(tuning.key);
+    checkbox.disabled = !initialized || savingFavorites;
+    checkbox.dataset.tuning = tuning.key;
+    checkbox.onchange = () => saveFavoriteTuning(tuning.key, checkbox.checked);
+    const text = document.createElement('span');
+    text.textContent = tuning.label;
+    label.append(checkbox);
+    label.append(text);
+    fieldset.append(label);
+  }
+}
+
+async function saveFavoriteTuning(key, favorite) {
+  if (!initialized || savingFavorites) return;
+  const previous = new Set(favoriteTunings);
+  if (favorite) favoriteTunings.add(key);
+  else favoriteTunings.delete(key);
+  savingFavorites = true;
+  renderTunings();
+  $('favorite-tunings-message').textContent = 'Saving...';
+  try {
+    await invoke('save_favorite_tunings', {tunings: [...favoriteTunings]});
+    $('favorite-tunings-message').textContent = 'Favorite tunings saved.';
+  } catch (error) {
+    favoriteTunings = previous;
+    $('favorite-tunings-message').textContent = displayMessage(error.message);
+  } finally {
+    savingFavorites = false;
+    renderTunings();
+  }
+}
+
 async function refresh(resetPage = false) {
   if (resetPage) page = 0;
   const currentRequest = ++requestId;
   const value = await invoke('query_library', {query: {
     search: $('search').value, format: $('format').value, status: $('status').value,
-    sort, descending, page
+    tuning: $('tuning').value, sort, descending, page
   }});
   if (currentRequest !== requestId) return;
+  availableTunings = value.tunings || [];
+  renderTunings();
   rows = value.rows;
   page = value.page || 0;
   const total = value.total ?? rows.length;
@@ -147,15 +283,20 @@ async function refresh(resetPage = false) {
   $('next').disabled = page + 1 >= pageCount;
   $('empty').hidden = rows.length > 0;
   $('empty-title').textContent = total ? 'No files on this page' :
-    ($('search').value || $('format').value || $('status').value ? 'No matching scores' : 'Build your score library');
+    ($('search').value || $('format').value || $('status').value || $('tuning').value ? 'No matching scores' : 'Build your score library');
   for (const row of rows) {
     const tr = document.createElement('tr');
     tr.dataset.path = row.path;
     tr.tabIndex = 0;
     const location = fileLocation(row.path);
-    for (const key of ['title', 'filename', 'directory', 'artist', 'album', 'format', 'tempo', 'tracks', 'status']) {
+    for (const [key] of libraryColumns) {
       const td = document.createElement('td');
+      td.dataset.column = key;
       td.textContent = (key === 'filename' || key === 'directory' ? location[key] : row[key]) ?? '—';
+      if (key === 'updated_at') {
+        td.textContent = displayDate(row.updated_at);
+        if (row.updated_at) td.title = row.updated_at;
+      }
       if (key === 'directory') td.title = location.fullDirectory;
       if (key === 'filename') td.title = location.filename;
       if (key === 'format') {
@@ -176,6 +317,7 @@ async function refresh(resetPage = false) {
     button.parentElement.setAttribute('aria-sort',
       button.dataset.sort === sort ? (descending ? 'descending' : 'ascending') : 'none');
   }
+  applyColumnVisibility();
   detail(rows.find(row => row.path === selected?.path) || null);
 }
 
@@ -188,7 +330,11 @@ async function state() {
     setPathField('parser', savedParser);
     setPathField('folder', value.folder || '');
     $('database').textContent = displayPath(value.database);
+    hiddenColumns = new Set((value.hidden_columns || []).filter(key => libraryColumns.some(([column]) => column === key)));
+    favoriteTunings = new Set(value.favorite_tunings || []);
     initialized = true;
+    renderTunings();
+    applyColumnVisibility();
   }
   setBusy(value.busy || acceptingJob || savingSettings);
   $('cancel').hidden = !value.busy;
@@ -299,7 +445,7 @@ $('search').oninput = () => {
   clearTimeout(debounce);
   debounce = setTimeout(() => refresh(true).catch(report), 150);
 };
-for (const id of ['format', 'status']) $(id).onchange = () => refresh(true).catch(report);
+for (const id of ['format', 'status', 'tuning']) $(id).onchange = () => refresh(true).catch(report);
 for (const button of document.querySelectorAll('[data-sort]')) button.onclick = () => {
   descending = sort === button.dataset.sort ? !descending : false;
   sort = button.dataset.sort;
