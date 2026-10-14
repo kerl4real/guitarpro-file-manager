@@ -63,6 +63,31 @@ application must be installed and associated with that extension.
 window waits for active jobs to finish or be cancelled before it closes. Individual
 parse errors appear as library rows even if the parser process exits successfully.
 
+## Build and install a release on Windows
+
+Close the running manager, then run this from PowerShell in the repository:
+
+```powershell
+.\build-release.ps1
+```
+
+The script builds the sibling `../guitarpro-file-parser` CLI and this manager in
+release mode, then copies both executables to
+`%LOCALAPPDATA%\Programs\GuitarProFileManager`. It stops on build failure before
+copying. Run it again to update the installed executables at the same paths.
+Rust/Cargo and the native build prerequisites must already be installed.
+
+Launch `guitarpro-file-manager.exe` from that folder, then right-click its taskbar
+icon and select **Pin to taskbar**. In **Settings**, select the installed
+`score_tool.exe` if your saved parser path points elsewhere. Existing library data
+and settings are retained.
+
+Optional paths:
+
+```powershell
+.\build-release.ps1 -ParserDirectory C:\path\to\guitarpro-file-parser -InstallDirectory C:\Apps\GuitarProFileManager
+```
+
 ## Data and configuration
 
 The default library location is:
